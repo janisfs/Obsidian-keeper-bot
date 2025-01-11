@@ -8,7 +8,9 @@ from config import API_TOKEN
 async def main():
     # Проверяем наличие токена
     if not API_TOKEN:
-        raise ValueError("API_TOKEN не найден! Проверьте файл config.py или переменные окружения.")
+        raise ValueError(
+            "API_TOKEN не найден! Проверьте файл config.py или переменные окружения."
+            )
 
     # Создаем экземпляры бота и диспетчера
     bot = Bot(token=API_TOKEN)
