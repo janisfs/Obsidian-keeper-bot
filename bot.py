@@ -28,6 +28,13 @@ class NoteStates(StatesGroup):
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+def extract_title(text: str) -> str:
+    """Извлекает заголовок из первой строки текста"""
+    lines = text.strip().split('\n')
+    title = lines[0] if lines else "Untitled"
+    return title.strip()
+
+
 def get_message_text(message: types.Message) -> str:
     """Извлекает текст из различных типов сообщений"""
     if message.text:
@@ -38,66 +45,53 @@ def get_message_text(message: types.Message) -> str:
         return message.text or message.caption or ""
     return ""
 
+
 @dp.message()
 async def handle_message(message: types.Message, state: FSMContext):
-    """Обработчик входящих сообщений"""
     try:
         current_state = await state.get_state()
         logger.info(f"Текущее состояние: {current_state}")
         
         if current_state == NoteStates.waiting_for_tags.state:
-            # Обработка тегов
             data = await state.get_data()
             note_text = data.get('note_text', '')
-            
-            logger.info(f"Получены теги: {message.text}")
-            logger.info(f"Сохраненный текст: {note_text}")
             
             if not note_text:
                 await message.reply("❌ Ошибка: текст заметки пустой")
                 await state.clear()
                 return
             
+            # Извлекаем заголовок из первой строки
+            title = extract_title(note_text)
+            
             # Получаем теги из сообщения
             tags = [tag.strip() for tag in message.text.split() if tag.strip().startswith('#')]
             obsidian_tags = [f"[[{tag.replace('#', '').capitalize()}]]" for tag in tags]
+            
+            # Создаем безопасное имя файла из заголовка
+            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+            filename = os.path.join(NOTES_DIR, f"{safe_title}.md")
+            
+            
+            content = f"""tags: {' '.join(obsidian_tags)}
+                date: {datetime.now().strftime('%Y-%m-%d')}
 
+                    {note_text}"""
             
-            # Создаем имя файла
-            timestamp = datetime.now().strftime('%Y%m%d')
-            filename = os.path.join(NOTES_DIR, f"note_{timestamp}.md")
-            
-            # Формируем содержимое
-            content = f"""
-tags: {' '.join(obsidian_tags)}
-date: {datetime.now().strftime('%Y-%m-%d')}
-
-{note_text}"""
-            
-            # Сохраняем файл
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(content)
             
             logger.info(f"Сохранен файл: {filename}")
-            logger.info(f"Содержимое файла: {content[:100]}...")  # Логируем начало содержимого
-            
-            # Отправляем подтверждение
-            await message.reply(f"✅ Заметка сохранена: {os.path.basename(filename)}")
+            await message.reply(f"✅ Заметка '{safe_title}' сохранена")
             await state.clear()
             
         else:
-            # Получаем текст сообщения
             text = get_message_text(message)
             if not text:
                 await message.reply("❌ Пожалуйста, отправьте текстовое сообщение")
                 return
-                
-            logger.info(f"Получено сообщение: {text[:100]}...")
             
-            # Сохраняем текст в состояние
             await state.update_data(note_text=text)
-            
-            # Запрашиваем теги
             await message.reply("Введите теги через пробел (например: #работа #идеи)")
             await state.set_state(NoteStates.waiting_for_tags)
             logger.info("Ожидание тегов...")
@@ -106,6 +100,7 @@ date: {datetime.now().strftime('%Y-%m-%d')}
         logger.error(f"Ошибка при обработке сообщения: {e}")
         await message.reply("❌ Произошла ошибка при обработке сообщения")
         await state.clear()
+
 
 async def main():
     logger.info("Запуск бота...")
