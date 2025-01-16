@@ -47,26 +47,95 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 
-def find_urls(text: str) -> list[str]:
-    """Находит URL в тексте"""
-    url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-    return re.findall(url_pattern, text)
+def find_urls(text: str) -> list[tuple[str, str]]:
+    """Находит URL и возвращает список кортежей (текст, ссылка)"""
+    url_pattern = r'(?:\[([^\]]+)\]\(([^)]+)\))|((?:http|https)://[^\s]+)'
+    urls = []
+    
+    for match in re.finditer(url_pattern, text):
+        if match.group(1) and match.group(2):
+            # Это Markdown-ссылка
+            urls.append((match.group(1), match.group(2)))
+        elif match.group(3):
+            # Обычный URL
+            urls.append((match.group(3), match.group(3)))
+    
+    return urls
 
 
-def format_message_with_urls(text: str, urls: list[str]) -> str:
-    """Форматирует текст сообщения, добавляя ссылки в конец"""
-    # Основной текст
-    formatted_text = text
+def clean_url(url: str) -> str:
+    """Очищает и форматирует URL"""
+    # Убираем протокол, если есть
+    url = re.sub(r'^https?://', '', url)
+    # Убираем trailing слэш
+    url = url.rstrip('/')
+    return url
 
-    # Если есть ссылки, добавляем их в конец
-    if urls:
-        formatted_text += "\n\n🔗 Ссылки:\n"
-        for url in urls:
-            parsed_url = urlparse(url)
-            name = parsed_url.netloc
-            formatted_text += f"- [{name}]({url})\n"
 
+def extract_telegram_links(message: types.Message) -> list[tuple[str, str]]:
+    """
+    Извлекает ссылки из entities сообщения Telegram
+    Возвращает список кортежей (text, url)
+    """
+    entities = message.entities or message.caption_entities or []
+    text = message.text or message.caption or ""
+    links = []
+    
+    for entity in entities:
+        if entity.type == "text_link":
+            # Получаем текст, к которому привязана ссылка
+            link_text = text[entity.offset:entity.offset + entity.length]
+            links.append((link_text, entity.url))
+        elif entity.type == "url":
+            # Для обычных URL используем сам URL как текст
+            url = text[entity.offset:entity.offset + entity.length]
+            links.append((url, url))
+    
+    return links
+
+
+def format_links(text):
+    # Регулярное выражение для поиска URL
+    def replace_link(match):
+        url = match.group(0)
+        return f"[Original]({url})"
+
+    # Применяем замену
+    formatted_text = re.sub(r"https?://[^\s]+", replace_link, text)
     return formatted_text
+
+
+def format_message_with_urls(text: str, urls: list[tuple[str, str]]) -> str:
+    """Форматирует текст сообщения с Markdown-ссылками"""
+    formatted_text = text
+    
+    for original_text, url in urls:
+        if original_text in formatted_text:
+            formatted_text = formatted_text.replace(
+                original_text,
+                f"[{original_text}]({url})"
+            )
+    
+    return formatted_text
+
+
+async def process_message(message: types.Message) -> MessageData:
+    """Обрабатывает сообщение и возвращает структурированные данные"""
+    data = MessageData()
+    text = message.text or message.caption or "Untitled"
+    
+    # Извлекаем ссылки
+    urls = find_urls(text)
+    logger.info(f"Найдены ссылки: {urls}")
+    
+    # Форматируем текст
+    formatted_text = format_message_with_urls(text, urls)
+    data.text = formatted_text
+    
+    # Заголовок заметки
+    data.title = extract_title(text)
+    
+    return data
 
 
 async def download_image(file: types.File) -> tuple[str, str]:
@@ -169,12 +238,14 @@ async def handle_message(message: types.Message, state: FSMContext):
             safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
             filename = os.path.join(NOTES_DIR, f"{safe_title}.md")
             
-            content = f"""tags: {' '.join(obsidian_tags)}
-date: {datetime.now().strftime('%Y-%m-%d')}
+            content = f"""
+            tags: {' '.join(obsidian_tags)}
+            date: {datetime.now().strftime('%Y-%m-%d')}
 
-{note_text}
+            {data.text}
 
-{''.join(f'\n{link}' for link in image_links)}"""
+            {''.join(data.image_links)}
+            """
             
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(content)
